@@ -2,6 +2,18 @@ name: Manual Re-Ad Trigger
 
 on:
   workflow_dispatch:
+    inputs:
+      target_complex:
+        description: '재광고를 진행할 아파트 단지를 선택하세요'
+        required: true
+        default: '다산팬테리움리버테라스I'
+        type: choice
+        options:
+          - '다산팬테리움리버테라스I'
+          - '다산팬테리움리버테라스II'
+          - '다산신안인스빌퍼스트포레'
+          - '다산한강반도유보라'
+          - '다산신안인스빌퍼스트리버'
 
 jobs:
   run-re-ad:
@@ -31,6 +43,7 @@ jobs:
         env:
           LOGIN_ID: ${{ secrets.LOGIN_ID || secrets.JELWANG85 }}
           LOGIN_PASSWORD: ${{ secrets.LOGIN_PASSWORD || secrets.LOGIN_PW }}
+          TARGET_COMPLEX: ${{ github.event.inputs.target_complex }}
           PYTHONUNBUFFERED: "1"
         run: |
           python auto_login.py --headless

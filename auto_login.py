@@ -30,6 +30,9 @@ LOGIN_PAGE_URL = "https://www.aipartner.com/integrated/login?serviceCode=1000"
 USER_ID = os.environ.get("LOGIN_ID") or "jelwang85"
 USER_PW = os.environ.get("LOGIN_PASSWORD") or "ab1223521!"
 
+# 재광고 대상 아파트 단지명 (GitHub Actions inputs 또는 로컬 기본값)
+TARGET_COMPLEX = os.environ.get("TARGET_COMPLEX") or "다산팬테리움리버테라스I"
+
 # 연속 재광고 갱신 제한 횟수 (총 7건)
 MAX_RE_AD_COUNT = 7
 
@@ -98,36 +101,113 @@ def handle_alerts(driver, accept=True, max_tries=3):
             break
 
 
-def select_complex_row(driver, wait):
-    """[진행순서 1] 취급 매물 목록에서 아파트 단지 행을 클릭해 매물 목록 표시"""
-    print("      - 취급 매물 목록에서 아파트 단지 행 탐색 중...")
-    complex_selectors = [
-        "table.filteringTable tbody tr td.name a",
-        "table.filteringTable tbody tr:first-child td.name a",
-        ".filteringTableWrap table tbody tr td.name a",
-        "a[href*='searchSammaryOffering']",
-    ]
-    complex_elem = None
-    for sel in complex_selectors:
-        elems = driver.find_elements(By.CSS_SELECTOR, sel)
-        if elems and any(e.is_displayed() for e in elems):
-            complex_elem = [e for e in elems if e.is_displayed()][0]
+# 아파트 단지 정보 매핑 (data-complex_cd 및 표기 변형 지원)
+COMPLEX_INFO_MAP = {
+    "다산팬테리움리버테라스I": {
+        "cd": "42227",
+        "names": ["다산펜테리움리버테라스Ⅰ", "다산팬테리움리버테라스I", "다산펜테리움리버테라스I", "다산팬테리움리버테라스1"],
+    },
+    "다산팬테리움리버테라스II": {
+        "cd": "42648",
+        "names": ["다산펜테리움리버테라스Ⅱ", "다산팬테리움리버테라스II", "다산펜테리움리버테라스II", "다산팬테리움리버테라스2"],
+    },
+    "다산신안인스빌퍼스트포레": {
+        "cd": "45569",
+        "names": ["다산신안인스빌퍼스트포레"],
+    },
+    "다산한강반도유보라": {
+        "cd": "42229",
+        "names": ["다산한강반도유보라"],
+    },
+    "다산신안인스빌퍼스트리버": {
+        "cd": "42840",
+        "names": ["다산신안인스빌퍼스트리버"],
+    },
+}
+
+
+def normalize_complex_name(name):
+    """단지명 비교를 위한 정규화 (공백 제거, 팬/펜 통일, 로마숫자 1/2 통일, 소문자화)"""
+    if not name:
+        return ""
+    s = name.replace(" ", "").replace("팬", "펜")
+    s = s.replace("Ⅰ", "1").replace("I", "1").replace("i", "1")
+    s = s.replace("Ⅱ", "2").replace("II", "2").replace("ii", "2")
+    return s.lower()
+
+
+def select_complex_row(driver, wait, target_complex=None):
+    """[진행순서 1] 취급 매물 목록에서 지정된 아파트 단지 행을 찾아 클릭해 매물 목록 표시"""
+    target = target_complex or TARGET_COMPLEX or "다산팬테리움리버테라스I"
+    print(f"      - 취급 매물 목록에서 대상 아파트 단지 ['{target}'] 탐색 중...")
+    
+    # 목록 로딩 대기
+    try:
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "table.filteringTable tbody tr"))
+        )
+    except Exception:
+        pass
+
+    target_norm = normalize_complex_name(target)
+    target_info = COMPLEX_INFO_MAP.get(target, {})
+    target_cd = target_info.get("cd")
+
+    rows = driver.find_elements(By.CSS_SELECTOR, "table.filteringTable tbody tr")
+    matched_elem = None
+    matched_name = None
+
+    for row in rows:
+        # 1) data-complex_cd 속성으로 매칭 시도
+        if target_cd:
+            cd_elems = row.find_elements(By.CSS_SELECTOR, f"[data-complex_cd='{target_cd}']")
+            if cd_elems:
+                link_elems = row.find_elements(By.CSS_SELECTOR, "td.name a, a")
+                if link_elems:
+                    matched_elem = link_elems[0]
+                    matched_name = matched_elem.text.strip() or target
+                    break
+
+        # 2) 행 텍스트 정규화 비교
+        row_text = row.text.strip()
+        row_norm = normalize_complex_name(row_text)
+        if target_norm in row_norm:
+            link_elems = row.find_elements(By.CSS_SELECTOR, "td.name a, a")
+            if link_elems:
+                matched_elem = link_elems[0]
+                matched_name = matched_elem.text.strip()
+                break
+
+        # 3) 별칭(names) 목록 비교
+        for alias in target_info.get("names", []):
+            if normalize_complex_name(alias) in row_norm:
+                link_elems = row.find_elements(By.CSS_SELECTOR, "td.name a, a")
+                if link_elems:
+                    matched_elem = link_elems[0]
+                    matched_name = matched_elem.text.strip()
+                    break
+        if matched_elem:
             break
-            
-    if not complex_elem:
+
+    # 매칭 실패 시 fallback: 첫 번째 표시되는 행
+    if not matched_elem:
+        print(f"      [경고] 대상 단지 '{target}'와 일치하는 행을 찾지 못하여 기본 첫 번째 단지로 대체합니다.")
         elems = driver.find_elements(By.CSS_SELECTOR, "table.filteringTable tbody tr td.name a")
         if elems:
-            complex_elem = elems[0]
+            matched_elem = elems[0]
+            matched_name = matched_elem.text.strip()
 
-    if not complex_elem:
-        raise Exception("취급 매물 목록에서 아파트 단지 행을 찾을 수 없습니다.")
-        
-    print(f"      - 선택된 단지: {complex_elem.text.strip()}")
+    if not matched_elem:
+        raise Exception(f"취급 매물 목록에서 아파트 단지 행을 찾을 수 없습니다. (대상: {target})")
+
+    print(f"      - 선택된 단지: {matched_name} (목표 단지: {target})")
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", matched_elem)
+    time.sleep(0.5)
     try:
-        complex_elem.click()
+        matched_elem.click()
     except Exception:
-        driver.execute_script("arguments[0].click();", complex_elem)
-        
+        driver.execute_script("arguments[0].click();", matched_elem)
+
     time.sleep(2)
 
 
@@ -218,8 +298,9 @@ def change_sort_to_oldest(driver, wait):
     time.sleep(2)
 
 
-def refresh_and_ensure_list(driver, wait):
+def refresh_and_ensure_list(driver, wait, target_complex=None):
     """목록 복귀 후 매물 목록 최신화 및 '오래된 순' 정렬 상태 보장"""
+    target = target_complex or TARGET_COMPLEX
     if "/offerings/ad_list" not in driver.current_url:
         print("      - 매물 관리(ad_list) 페이지로 이동 중...")
         driver.get("https://www.aipartner.com/offerings/ad_list")
@@ -227,7 +308,7 @@ def refresh_and_ensure_list(driver, wait):
 
     # 단지 행 다시 클릭 (서버로부터 최신 매물 목록 리로드)
     try:
-        select_complex_row(driver, wait)
+        select_complex_row(driver, wait, target_complex=target)
     except Exception as e:
         print(f"      - 단지 새로고침 참고: {e}")
 
@@ -601,9 +682,11 @@ def process_single_re_ad(driver, wait, target_row, re_ad_btn):
     complete_payment_and_return_to_list(driver, wait)
 
 
-def run_pipeline(keep_open=True, headless=False, max_count=MAX_RE_AD_COUNT):
+def run_pipeline(keep_open=True, headless=False, max_count=MAX_RE_AD_COUNT, target_complex=None):
+    selected_complex = target_complex or TARGET_COMPLEX or "다산팬테리움리버테라스I"
     print("=" * 60)
     print("AI파트너 자동 로그인 및 매물 정렬 / 연속 재광고 파이프라인 시작")
+    print(f"선택된 대상 아파트 단지: {selected_complex}")
     print(f"설정된 최대 처리 건수: {max_count}건")
     print("=" * 60)
     
@@ -658,8 +741,8 @@ def run_pipeline(keep_open=True, headless=False, max_count=MAX_RE_AD_COUNT):
         time.sleep(2)
 
         # 3. 초기 목록 준비: 단지 행 클릭 및 '오래된 순' 정렬
-        print("[3/4] 취급 매물 목록 초기화 및 '오래된 순' 정렬 적용 중...")
-        select_complex_row(driver, wait)
+        print(f"[3/4] 취급 매물 목록 초기화 (대상 단지: {selected_complex}) 및 '오래된 순' 정렬 적용 중...")
+        select_complex_row(driver, wait, target_complex=selected_complex)
         change_sort_to_oldest(driver, wait)
 
         # 4. 연속 재광고 반복 루프 (최대 max_count회)
@@ -691,10 +774,11 @@ def run_pipeline(keep_open=True, headless=False, max_count=MAX_RE_AD_COUNT):
             if loop_idx < max_count:
                 print("\n      - 다음 매물 처리를 위해 목록 새로고침 및 정렬 상태 확인 중...")
                 time.sleep(2.5)
-                refresh_and_ensure_list(driver, wait)
+                refresh_and_ensure_list(driver, wait, target_complex=selected_complex)
         
         print("\n" + "=" * 60)
         print(f"★ [작업 완료] 지정된 매물 재광고 작업이 모두 성공적으로 완료되었습니다! (총 {success_count}건 완료)")
+        print(f"- 최종 대상 단지 : {selected_complex}")
         print(f"- 최종 완료 URL : {driver.current_url}")
         print(f"- 최종 페이지 제목 : {driver.title}")
         print(f"안내: {max_count}개 매물 재광고 처리가 완료되어 브라우저를 깔끔하게 종료(driver.quit())합니다.")
@@ -723,4 +807,4 @@ def run_pipeline(keep_open=True, headless=False, max_count=MAX_RE_AD_COUNT):
 
 if __name__ == "__main__":
     is_headless = "--headless" in sys.argv
-    run_pipeline(keep_open=False, headless=is_headless, max_count=MAX_RE_AD_COUNT)
+    run_pipeline(keep_open=False, headless=is_headless, max_count=MAX_RE_AD_COUNT, target_complex=TARGET_COMPLEX)

@@ -400,245 +400,339 @@ def find_next_re_ad_target(driver, processed_ids):
     return None, None, None
 
 
-def complete_payment_and_return_to_list(driver, wait):
+def complete_payment_and_return_to_list(driver, wait, loop_idx=1, max_count=MAX_RE_AD_COUNT):
     """
     결제/신청 페이지에서:
     1. [필수 동의 체크] 페이지 상단의 '모바일확인v2 개인정보 처리 위탁 동의' 체크박스 체크
     2. [결제 버튼 클릭] 페이지 맨 아래로 스크롤 후 주황색 [결제하기] 버튼 클릭
-    3. [결제 완료 Alert 처리] 브라우저 Alert("로켓전송이 완료되었습니다.") 대기 및 확인(Accept)
+    3. [결제 완료 Alert 처리] 브라우저 Alert("로켓전송이 완료되었습니다.") 대기(최대 10초) 및 확인(Accept)
     4. [목록 복귀] 전송 완료 화면에서 맨 하단의 [목록] 버튼 클릭하여 원래 매물 관리(ad_list)로 복귀
     """
-    print("      - 결제 완료 및 매물 관리 목록 복귀 프로세스 진행...")
+    item_tag = f"[{loop_idx}/{max_count}번째 매물]"
+    print(f"\n      - {item_tag} 결제 완료 및 매물 관리 목록 복귀 프로세스 진행...")
 
-    # 결제/신청 페이지 로딩 대기 (최대 20초)
-    long_wait = WebDriverWait(driver, 20)
     try:
-        long_wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
-    except Exception:
-        pass
-    time.sleep(2)
+        # -------------------------------------------------------------
+        # 0. 결제 페이지 진입 대기 및 완전 로딩 보장
+        # -------------------------------------------------------------
+        time.sleep(2)
+        try:
+            WebDriverWait(driver, 15).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
+        except Exception:
+            pass
+        time.sleep(2)
 
-    # -------------------------------------------------------------
-    # 1. [필수 동의 체크] '모바일확인v2 개인정보 처리 위탁 동의' 체크박스 체크
-    # -------------------------------------------------------------
-    print("      - [1/4] '모바일확인v2 개인정보 처리 위탁 동의' 필수 체크박스 탐색 중...")
-    driver.execute_script("window.scrollTo(0, 0);")
-    time.sleep(1)
+        print(f"[*] {item_tag} 결제 페이지 진입 완료 (현재 URL: {driver.current_url})")
 
-    checked = False
-    xpath_expressions = [
-        "//*[contains(text(), '모바일확인') and contains(text(), '동의')]",
-        "//*[contains(text(), '개인정보 처리 위탁 동의')]",
-        "//*[contains(text(), '모바일확인v2')]",
-        "//*[contains(text(), '모바일확인')]",
-        "//*[contains(text(), '위탁 동의')]",
-    ]
-    
-    for xpath in xpath_expressions:
-        elems = driver.find_elements(By.XPATH, xpath)
-        for elem in elems:
-            try:
-                if elem.tag_name == "label":
-                    for_id = elem.get_attribute("for")
-                    if for_id:
-                        chk_input = driver.find_element(By.ID, for_id)
-                        if not chk_input.is_selected():
+        # 결제 페이지 진입 시점에 잔액 부족 / 충전 필요 문구가 있는지 사전 진단
+        try:
+            body_text = driver.find_element(By.TAG_NAME, "body").text
+            for kw in ["잔액이 부족", "포인트 부족", "캐시 부족", "충전 필요", "잔액 부족", "결제 불가"]:
+                if kw in body_text:
+                    print(f"[!] {item_tag} [사전문구 경고] 결제 페이지 내 '{kw}' 문구가 감지되었습니다!")
+        except Exception:
+            pass
+
+        # -------------------------------------------------------------
+        # 1. [필수 동의 체크] '모바일확인v2 개인정보 처리 위탁 동의' 체크박스 체크
+        # -------------------------------------------------------------
+        print(f"      - {item_tag} 필수 동의 체크박스 탐색 및 로딩 대기 중...")
+        driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(1)
+
+        # 동의 관련 요소 나타날 때까지 대기
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((
+                    By.XPATH,
+                    "//*[contains(text(), '모바일확인') or contains(text(), '위탁 동의') or contains(@class, 'agree') or contains(@class, 'check')]"
+                ))
+            )
+        except Exception:
+            pass
+
+        time.sleep(2)
+
+        checked = False
+        xpath_expressions = [
+            "//*[contains(text(), '모바일확인') and contains(text(), '동의')]",
+            "//*[contains(text(), '개인정보 처리 위탁 동의')]",
+            "//*[contains(text(), '모바일확인v2')]",
+            "//*[contains(text(), '모바일확인')]",
+            "//*[contains(text(), '위탁 동의')]",
+        ]
+        
+        for xpath in xpath_expressions:
+            elems = driver.find_elements(By.XPATH, xpath)
+            for elem in elems:
+                try:
+                    if elem.tag_name == "label":
+                        for_id = elem.get_attribute("for")
+                        if for_id:
+                            chk_input = driver.find_element(By.ID, for_id)
+                            if not chk_input.is_selected():
+                                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
+                                time.sleep(0.5)
+                                try:
+                                    WebDriverWait(driver, 5).until(EC.element_to_be_clickable(elem))
+                                    elem.click()
+                                except Exception:
+                                    driver.execute_script("arguments[0].click();", elem)
+                                driver.execute_script("arguments[0].checked = true; arguments[0].dispatchEvent(new Event('change'));", chk_input)
+                                checked = True
+                                break
+                        else:
                             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
                             time.sleep(0.5)
-                            driver.execute_script("arguments[0].click();", elem)
-                            driver.execute_script("arguments[0].checked = true; arguments[0].dispatchEvent(new Event('change'));", chk_input)
+                            try:
+                                WebDriverWait(driver, 5).until(EC.element_to_be_clickable(elem))
+                                elem.click()
+                            except Exception:
+                                driver.execute_script("arguments[0].click();", elem)
                             checked = True
-                            print(f"      - [동의 완료] 라벨 클릭으로 체크 완료 (for: {for_id})")
                             break
-                    else:
-                        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
+                    
+                    parent = elem.find_element(By.XPATH, "./ancestor::*[self::div or self::li or self::p][contains(@class, 'check') or contains(@class, 'agree') or contains(@class, 'box') or contains(@class, 'wrap') or contains(@class, 'item')][1]")
+                    chk_inputs = parent.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
+                    for chk in chk_inputs:
+                        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", chk)
                         time.sleep(0.5)
-                        driver.execute_script("arguments[0].click();", elem)
-                        checked = True
-                        print("      - [동의 완료] 라벨 직접 클릭 완료")
+                        if not chk.is_selected():
+                            lbls = parent.find_elements(By.TAG_NAME, "label")
+                            if lbls:
+                                try:
+                                    WebDriverWait(driver, 5).until(EC.element_to_be_clickable(lbls[0]))
+                                    lbls[0].click()
+                                except Exception:
+                                    driver.execute_script("arguments[0].click();", lbls[0])
+                            else:
+                                try:
+                                    WebDriverWait(driver, 5).until(EC.element_to_be_clickable(chk))
+                                    chk.click()
+                                except Exception:
+                                    driver.execute_script("arguments[0].click();", chk)
+                            driver.execute_script("arguments[0].checked = true; arguments[0].dispatchEvent(new Event('change'));", chk)
+                            checked = True
+                            break
+                    if checked:
                         break
-                
-                parent = elem.find_element(By.XPATH, "./ancestor::*[self::div or self::li or self::p][contains(@class, 'check') or contains(@class, 'agree') or contains(@class, 'box') or contains(@class, 'wrap') or contains(@class, 'item')][1]")
-                chk_inputs = parent.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
-                for chk in chk_inputs:
-                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", chk)
-                    time.sleep(0.5)
+                except Exception:
+                    continue
+            if checked:
+                break
+
+        # Fallback: 필수/주황색 영역 체크박스
+        if not checked:
+            candidate_checkboxes = driver.find_elements(
+                By.CSS_SELECTOR,
+                ".point input[type='checkbox'], .orange input[type='checkbox'], .org input[type='checkbox'], .req input[type='checkbox'], input[type='checkbox'][required], input[type='checkbox'][name*='agree'], input[type='checkbox'][id*='agree'], input[type='checkbox'][id*='v2'], input[type='checkbox'][id*='mobile']"
+            )
+            for chk in candidate_checkboxes:
+                try:
                     if not chk.is_selected():
-                        lbls = parent.find_elements(By.TAG_NAME, "label")
-                        if lbls:
-                            driver.execute_script("arguments[0].click();", lbls[0])
-                        else:
+                        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", chk)
+                        time.sleep(0.5)
+                        try:
+                            WebDriverWait(driver, 5).until(EC.element_to_be_clickable(chk))
+                            chk.click()
+                        except Exception:
                             driver.execute_script("arguments[0].click();", chk)
                         driver.execute_script("arguments[0].checked = true; arguments[0].dispatchEvent(new Event('change'));", chk)
                         checked = True
-                        print("      - [동의 완료] 해당 영역 체크박스 체크 완료")
                         break
-                if checked:
+                except Exception:
+                    pass
+
+        print(f"[*] {item_tag} 동의 체크 완료")
+        time.sleep(2)
+
+        # -------------------------------------------------------------
+        # 2. [결제 버튼 클릭] 페이지 맨 아래로 스크롤한 뒤, 주황색 [결제하기] 버튼 클릭
+        # -------------------------------------------------------------
+        print(f"      - {item_tag} 페이지 맨 아래로 스크롤 및 [결제하기] 버튼 탐색 중...")
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(2)
+
+        pay_button = None
+        pay_btn_selectors = [
+            "//button[contains(normalize-space(.), '결제하기')]",
+            "//a[contains(normalize-space(.), '결제하기')]",
+            "//button[contains(@class, 'btn-bg-org') or contains(@class, 'btn-bg-dorg') or contains(@class, 'btnPay') or contains(@class, 'btn-pay')]",
+            "//a[contains(@class, 'btn-bg-org') or contains(@class, 'btn-bg-dorg') or contains(@class, 'btnPay') or contains(@class, 'btn-pay')]",
+            "button.btn-bg-org, button.btn-bg-dorg, button.btnPay, button.btn-pay",
+            "a.btn-bg-org, a.btn-bg-dorg, a.btnPay, a.btn-pay",
+        ]
+
+        # 결제 버튼 탐색
+        for sel in pay_btn_selectors:
+            try:
+                if sel.startswith("//"):
+                    elems = driver.find_elements(By.XPATH, sel)
+                else:
+                    elems = driver.find_elements(By.CSS_SELECTOR, sel)
+                for el in elems:
+                    if el.is_displayed():
+                        pay_button = el
+                        break
+                if pay_button:
                     break
             except Exception:
                 continue
-        if checked:
-            break
 
-    # Fallback: 필수/주황색 영역 체크박스
-    if not checked:
-        candidate_checkboxes = driver.find_elements(
-            By.CSS_SELECTOR,
-            ".point input[type='checkbox'], .orange input[type='checkbox'], .org input[type='checkbox'], .req input[type='checkbox'], input[type='checkbox'][required], input[type='checkbox'][name*='agree'], input[type='checkbox'][id*='agree'], input[type='checkbox'][id*='v2'], input[type='checkbox'][id*='mobile']"
-        )
-        for chk in candidate_checkboxes:
-            try:
-                if not chk.is_selected():
-                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", chk)
-                    driver.execute_script("arguments[0].click();", chk)
-                    driver.execute_script("arguments[0].checked = true; arguments[0].dispatchEvent(new Event('change'));", chk)
-                    checked = True
-                    print(f"      - [동의 완료] 필수/주황색 영역 체크박스 체크 (id: {chk.get_attribute('id')})")
-            except Exception:
-                pass
+        if not pay_button:
+            all_btns = driver.find_elements(By.CSS_SELECTOR, "button, a.btn")
+            for b in all_btns:
+                txt = b.text.strip()
+                if "결제하기" in txt or ("결제" in txt and "취소" not in txt):
+                    pay_button = b
+                    break
 
-    time.sleep(1.5)
+        if not pay_button:
+            raise Exception("페이지 하단에서 주황색 [결제하기] 버튼을 찾을 수 없습니다. (잔액 부족 등으로 결제 버튼 비활성화 여부 점검 필요)")
 
-    # -------------------------------------------------------------
-    # 2. [결제 버튼 클릭] 페이지 맨 아래로 스크롤한 뒤, 주황색 [결제하기] 버튼 클릭
-    # -------------------------------------------------------------
-    print("      - [2/4] 페이지 맨 아래로 스크롤 및 주황색 [결제하기] 버튼 탐색 중...")
-    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-    time.sleep(2)
-
-    pay_button = None
-    pay_btn_selectors = [
-        "//button[contains(normalize-space(.), '결제하기')]",
-        "//a[contains(normalize-space(.), '결제하기')]",
-        "//button[contains(@class, 'btn-bg-org') or contains(@class, 'btn-bg-dorg') or contains(@class, 'btnPay') or contains(@class, 'btn-pay')]",
-        "//a[contains(@class, 'btn-bg-org') or contains(@class, 'btn-bg-dorg') or contains(@class, 'btnPay') or contains(@class, 'btn-pay')]",
-        "button.btn-bg-org, button.btn-bg-dorg, button.btnPay, button.btn-pay",
-        "a.btn-bg-org, a.btn-bg-dorg, a.btnPay, a.btn-pay",
-    ]
-
-    for sel in pay_btn_selectors:
-        if sel.startswith("//"):
-            elems = driver.find_elements(By.XPATH, sel)
-        else:
-            elems = driver.find_elements(By.CSS_SELECTOR, sel)
-            
-        for el in elems:
-            if el.is_displayed():
-                pay_button = el
-                break
-        if pay_button:
-            break
-
-    if not pay_button:
-        all_btns = driver.find_elements(By.CSS_SELECTOR, "button, a.btn")
-        for b in all_btns:
-            txt = b.text.strip()
-            if "결제하기" in txt or ("결제" in txt and "취소" not in txt):
-                pay_button = b
-                break
-
-    if not pay_button:
-        raise Exception("페이지 하단에서 주황색 [결제하기] 버튼을 찾을 수 없습니다.")
-
-    print(f"      - 주황색 [결제하기] 버튼 클릭! ({pay_button.text.strip()})")
-    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", pay_button)
-    time.sleep(0.5)
-    try:
-        pay_button.click()
-    except Exception:
-        driver.execute_script("arguments[0].click();", pay_button)
-
-    # -------------------------------------------------------------
-    # 3. [결제 완료 Alert 처리] "로켓전송이 완료되었습니다." Alert 대기 및 확인(Accept)
-    # -------------------------------------------------------------
-    print("      - [3/4] 결제 완료 Alert ('로켓전송이 완료되었습니다.') 대기 중...")
-    try:
-        alert = WebDriverWait(driver, 15).until(EC.alert_is_present())
-        alert_text = alert.text
-        print(f"[*] 브라우저 결제 완료 Alert 감지: {alert_text}")
-        alert.accept()
-        print("      - 결제 완료 Alert 확인(Accept) 완료!")
-    except TimeoutException:
-        print("      - Alert 대기 시간 초과 또는 Alert가 미발생했습니다.")
-    except Exception as e:
-        print(f"      - Alert 처리 중 참고: {e}")
-
-    time.sleep(1)
-    try:
-        alert2 = driver.switch_to.alert
-        print(f"[*] 추가 Alert 감지: {alert2.text}")
-        alert2.accept()
-    except Exception:
-        pass
-
-    # -------------------------------------------------------------
-    # 4. [목록 복귀] 전송 완료 화면에서 맨 하단의 [목록] 버튼을 클릭하여 원래 매물 관리(ad_list) 복귀
-    # -------------------------------------------------------------
-    print("      - [4/4] 전송 완료 화면 로딩 대기 및 맨 하단 [목록] 버튼 탐색 중...")
-    time.sleep(2.5)
-
-    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-    time.sleep(1.5)
-
-    list_btn = None
-    list_btn_selectors = [
-        "//button[normalize-space(.)='목록']",
-        "//a[normalize-space(.)='목록']",
-        "//button[contains(normalize-space(.), '목록')]",
-        "//a[contains(normalize-space(.), '목록')]",
-        "a[href*='/offerings/ad_list']",
-        ".btn-list",
-        "button.btn-list",
-        "a.btn-list",
-    ]
-
-    for sel in list_btn_selectors:
-        if sel.startswith("//"):
-            elems = driver.find_elements(By.XPATH, sel)
-        else:
-            elems = driver.find_elements(By.CSS_SELECTOR, sel)
-            
-        for el in elems:
-            if el.is_displayed():
-                list_btn = el
-                break
-        if list_btn:
-            break
-
-    if not list_btn:
-        all_bottom_btns = driver.find_elements(By.CSS_SELECTOR, "button, a")
-        for b in all_bottom_btns:
-            txt = b.text.strip()
-            if txt in ["목록", "목록으로", "매물목록"]:
-                list_btn = b
-                break
-
-    if list_btn:
-        print(f"      - 하단 [목록] 버튼 클릭! ({list_btn.text.strip()})")
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", list_btn)
-        time.sleep(0.5)
+        # 결제 버튼 EC.element_to_be_clickable 대기 (최대 10초)
         try:
-            list_btn.click()
+            WebDriverWait(driver, 10).until(EC.element_to_be_clickable(pay_button))
         except Exception:
-            driver.execute_script("arguments[0].click();", list_btn)
-    else:
-        print("      - [목록] 버튼을 찾지 못하여 매물 관리 주소(/offerings/ad_list)로 직접 이동합니다.")
-        driver.get("https://www.aipartner.com/offerings/ad_list")
+            pass
 
-    # 매물 관리(ad_list) 화면 복귀 대기
-    try:
-        WebDriverWait(driver, 15).until(EC.url_contains("/offerings/ad_list"))
-    except Exception:
-        pass
+        btn_text = pay_button.text.strip() or "결제하기"
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", pay_button)
+        time.sleep(1)
 
-    time.sleep(2)
-    print("      - 원래 매물 관리(ad_list) 화면으로 복귀 완료!")
+        print(f"[*] {item_tag} 결제 버튼 클릭 ({btn_text})")
+        
+        # 일반 click() 시도 -> 예외 시 JavaScript 강제 클릭 폴백 적용
+        try:
+            pay_button.click()
+        except Exception as click_err:
+            print(f"      - 일반 click() 예외 발생 ({click_err}), JavaScript 강제 클릭 폴백 실행")
+            driver.execute_script("arguments[0].click();", pay_button)
+
+        # -------------------------------------------------------------
+        # 3. [결제 완료 Alert 처리] "로켓전송이 완료되었습니다." Alert 대기 (최대 10초) 및 확인(Accept)
+        # -------------------------------------------------------------
+        print(f"      - {item_tag} 결제 완료 Alert 대기 중 (최대 10초)...")
+        try:
+            alert = WebDriverWait(driver, 10).until(EC.alert_is_present())
+            alert_text = alert.text
+            print(f"[*] 브라우저 결제 완료 Alert 감지: '{alert_text}'")
+            if any(w in alert_text for w in ["잔액", "부족", "실패", "오류", "충전"]):
+                print(f"[!] {item_tag} [원인 분석] Alert에 제한/오류 메시지 포함: '{alert_text}'")
+            alert.accept()
+            print(f"      - {item_tag} 결제 Alert 즉시 승인(Accept) 완료!")
+        except TimeoutException:
+            print(f"      - {item_tag} Alert 대기 시간(10초) 초과 (Alert 미발생 또는 자동 닫힘)")
+        except Exception as e:
+            print(f"      - {item_tag} Alert 처리 중 참고: {e}")
+
+        time.sleep(1)
+        # 혹시 연속으로 뜨는 2차 Alert 확인
+        try:
+            alert2 = driver.switch_to.alert
+            print(f"[*] 추가 Alert 감지: '{alert2.text}'")
+            alert2.accept()
+        except Exception:
+            pass
+
+        # -------------------------------------------------------------
+        # 4. [목록 복귀] 전송 완료 화면에서 맨 하단의 [목록] 버튼을 클릭하여 원래 매물 관리(ad_list) 복귀
+        # -------------------------------------------------------------
+        print(f"      - {item_tag} 전송 완료 화면 로딩 대기 및 맨 하단 [목록] 버튼 탐색 중...")
+        time.sleep(2.5)
+
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(1.5)
+
+        list_btn = None
+        list_btn_selectors = [
+            "//button[normalize-space(.)='목록']",
+            "//a[normalize-space(.)='목록']",
+            "//button[contains(normalize-space(.), '목록')]",
+            "//a[contains(normalize-space(.), '목록')]",
+            "a[href*='/offerings/ad_list']",
+            ".btn-list",
+            "button.btn-list",
+            "a.btn-list",
+        ]
+
+        for sel in list_btn_selectors:
+            if sel.startswith("//"):
+                elems = driver.find_elements(By.XPATH, sel)
+            else:
+                elems = driver.find_elements(By.CSS_SELECTOR, sel)
+                
+            for el in elems:
+                if el.is_displayed():
+                    list_btn = el
+                    break
+            if list_btn:
+                break
+
+        if not list_btn:
+            all_bottom_btns = driver.find_elements(By.CSS_SELECTOR, "button, a")
+            for b in all_bottom_btns:
+                txt = b.text.strip()
+                if txt in ["목록", "목록으로", "매물목록"]:
+                    list_btn = b
+                    break
+
+        if list_btn:
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", list_btn)
+            time.sleep(0.5)
+            try:
+                list_btn.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", list_btn)
+        else:
+            print(f"      - [목록] 버튼을 찾지 못하여 매물 관리 주소(/offerings/ad_list)로 직접 이동합니다.")
+            driver.get("https://www.aipartner.com/offerings/ad_list")
+
+        # 매물 관리(ad_list) 화면 복귀 대기
+        try:
+            WebDriverWait(driver, 15).until(EC.url_contains("/offerings/ad_list"))
+        except Exception:
+            pass
+
+        time.sleep(2)
+        print(f"[*] {item_tag} 최종 완료 및 목록 복귀")
+
+    except Exception as err:
+        print(f"\n[오류] {item_tag} 결제 진행 중 오류 발생: {err}")
+        print(f"       현재 페이지 URL : {driver.current_url}")
+        print(f"       현재 페이지 제목 : {driver.title}")
+        
+        # 활성 Alert 점검
+        try:
+            curr_alert = driver.switch_to.alert
+            print(f"       [활성 Alert 내용] : '{curr_alert.text}'")
+            curr_alert.accept()
+        except Exception:
+            pass
+
+        # 페이지 본문 잔액 부족/충전 필요 등 원인 규명
+        try:
+            page_text = driver.find_element(By.TAG_NAME, "body").text
+            kw_found = [k for k in ["잔액", "부족", "충전", "포인트", "캐시", "전송권", "한도", "오류", "실패", "불가"] if k in page_text]
+            if kw_found:
+                print(f"       [원인 분석] 페이지 텍스트에서 감지된 키워드: {kw_found}")
+            lines = [line.strip() for line in page_text.splitlines() if line.strip()]
+            preview = " | ".join(lines[:12])
+            print(f"       [화면 텍스트 미리보기] : {preview[:350]}")
+        except Exception:
+            pass
+            
+        raise err
 
 
-def process_single_re_ad(driver, wait, target_row, re_ad_btn):
+def process_single_re_ad(driver, wait, target_row, re_ad_btn, loop_idx=1, max_count=MAX_RE_AD_COUNT):
     """선택된 매물 1건에 대해 [재광고] 클릭 -> 팝업 동의 -> Alert 승인 -> 결제 및 목록 복귀 수행"""
+    item_tag = f"[{loop_idx}/{max_count}번째 매물]"
+
     # 1. 대상 매물 행의 [재광고] 버튼 클릭
-    print("      - [재광고 단계 1] 매물 행의 [재광고] 버튼 클릭!")
+    print(f"      - {item_tag} [재광고 단계 1] 매물 행의 [재광고] 버튼 클릭!")
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", re_ad_btn)
     time.sleep(0.5)
     try:
@@ -659,7 +753,7 @@ def process_single_re_ad(driver, wait, target_row, re_ad_btn):
         elems = target_row.find_elements(By.CSS_SELECTOR, sel)
         if elems and any(e.is_displayed() for e in elems):
             target = [e for e in elems if e.is_displayed()][0]
-            print("      - [재광고 단계 2] 툴팁에서 '바로 재광고' 선택!")
+            print(f"      - {item_tag} [재광고 단계 2] 툴팁에서 '바로 재광고' 선택!")
             try:
                 target.click()
             except Exception:
@@ -670,14 +764,14 @@ def process_single_re_ad(driver, wait, target_row, re_ad_btn):
     handle_alerts(driver)
     
     # 3. 재광고 안내 팝업 (.monitoring-regist-pop) 처리: 팝업 동의 및 진행
-    print("      - [재광고 단계 3] 재광고 안내 팝업 확인 및 동의 처리...")
+    print(f"      - {item_tag} [재광고 단계 3] 재광고 안내 팝업 확인 및 동의 처리...")
     try:
         # 종료 동의 체크박스 확인
         agree_chks = driver.find_elements(By.CSS_SELECTOR, "input[name='acceptAdEnd'], input#popAdEndCheck")
         if agree_chks:
             chk = agree_chks[0]
             if not chk.is_selected():
-                print("      - [팝업 동의] 광고 종료 동의 체크박스 체크!")
+                print(f"      - {item_tag} [팝업 동의] 광고 종료 동의 체크박스 체크!")
                 try:
                     chk.click()
                 except Exception:
@@ -687,7 +781,7 @@ def process_single_re_ad(driver, wait, target_row, re_ad_btn):
         # 팝업 내 '바로 재광고' 실행 버튼 클릭
         confirm_btns = driver.find_elements(By.CSS_SELECTOR, "button.register.startReAdOfferings, button[data-callback='verification']")
         if confirm_btns:
-            print("      - [팝업 진행] '바로 재광고' 확인 버튼 클릭!")
+            print(f"      - {item_tag} [팝업 진행] '바로 재광고' 확인 버튼 클릭!")
             try:
                 confirm_btns[0].click()
             except Exception:
@@ -700,13 +794,13 @@ def process_single_re_ad(driver, wait, target_row, re_ad_btn):
         handle_alerts(driver)
         
     except Exception as e:
-        print(f"      - 재광고 안내 팝업 참고: {e}")
+        print(f"      - {item_tag} 재광고 안내 팝업 참고: {e}")
         
     time.sleep(3)
     handle_alerts(driver)
     
     # 4. 결제/신청 페이지 처리 및 매물 관리 목록 복귀
-    complete_payment_and_return_to_list(driver, wait)
+    complete_payment_and_return_to_list(driver, wait, loop_idx=loop_idx, max_count=max_count)
 
 
 def run_pipeline(keep_open=True, headless=False, max_count=MAX_RE_AD_COUNT, target_complex=None):
@@ -793,10 +887,21 @@ def run_pipeline(keep_open=True, headless=False, max_count=MAX_RE_AD_COUNT, targ
                 processed_ids.add(offering_id)
                 
             # 해당 매물에 대해 재광고 및 결제/목록 복귀 실행
-            process_single_re_ad(driver, wait, target_row, re_ad_btn)
-            success_count += 1
-            print(f"\n      >> [완료] {loop_idx}회차 매물 재광고 완료! (누적 완료: {success_count}/{max_count}건)")
-            
+            try:
+                process_single_re_ad(driver, wait, target_row, re_ad_btn, loop_idx=loop_idx, max_count=max_count)
+                success_count += 1
+                print(f"\n      >> [완료] {loop_idx}회차 매물 재광고 완료! (누적 완료: {success_count}/{max_count}건)")
+            except Exception as item_err:
+                print(f"\n[!] [{loop_idx}/{max_count}번째 매물] 재광고 결제 단계 진행 중 오류로 중단되었습니다.")
+                print(f"    오류 원인: {item_err}")
+                print(f"    현재까지 완료된 건수: {success_count}건")
+                try:
+                    driver.save_screenshot("payment_error.png")
+                    print("    오류 화면 스크린샷 캡처 완료 (payment_error.png)")
+                except Exception:
+                    pass
+                break
+
             # 다음 매물이 남아있다면, 목록 새로고침 및 '오래된 순' 정렬 상태 보장
             if loop_idx < max_count:
                 print("\n      - 다음 매물 처리를 위해 목록 새로고침 및 정렬 상태 확인 중...")

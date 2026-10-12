@@ -248,7 +248,8 @@ def change_sort_to_oldest(driver, wait):
                 sort_trigger = elems[0]
                 
         if not sort_trigger:
-            raise Exception("정렬 드롭다운 메뉴를 찾을 수 없습니다.")
+            print("      - [안내] 정렬 드롭다운 메뉴를 찾을 수 없습니다. (매물이 없거나 단일 매물일 수 있음)")
+            return
             
         # 이미 '오래된 순'이 선택되어 있다면 토글 생략 가능
         if "오래된" in sort_trigger.text:
@@ -285,7 +286,8 @@ def change_sort_to_oldest(driver, wait):
                     break
                     
         if not oldest_option:
-            raise Exception("'오래된 순' 옵션을 찾을 수 없습니다.")
+            print("      - [안내] '오래된 순' 옵션을 찾지 못해 현재 정렬 상태를 유지합니다.")
+            return
             
         print("      - 드롭다운 옵션 중 '오래된 순' 클릭!")
         try:
@@ -326,49 +328,74 @@ def find_next_re_ad_target(driver, processed_ids):
     """
     print("      - [재광고] 버튼이 있는 다음 대상 매물 탐색 중...")
     
+    # 단기 대기 (최대 3초)로 매물 목록 행 로딩 확인 (타임아웃 발생 시에도 에러 없이 즉시 계속 진행)
     try:
-        WebDriverWait(driver, 10).until(
+        WebDriverWait(driver, 3).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "table.tableAdSale tbody tr"))
         )
     except Exception:
         pass
         
-    rows = driver.find_elements(By.CSS_SELECTOR, "table.tableAdSale tbody tr")
-    print(f"      - 현재 목록에 표시된 매물 행 수: {len(rows)}개")
-    
-    for idx, row in enumerate(rows):
-        # 해당 행에 [재광고] 버튼이 있는지 확인
-        re_ad_btns = row.find_elements(
-            By.CSS_SELECTOR,
-            "a.btn-re-ad-pop, a.naverReAd, [aria-label='재광고'], #doubleRocketReAd, .re-ad-name"
-        )
-        if not re_ad_btns:
-            continue
+    try:
+        rows = driver.find_elements(By.CSS_SELECTOR, "table.tableAdSale tbody tr")
+        print(f"      - 현재 목록에 표시된 매물 행 수: {len(rows)}개")
+        
+        if not rows:
+            return None, None, None
             
-        target_btn = re_ad_btns[0]
-        
-        # 매물 식별자 추출 (중복 처리 방지용)
-        offering_id = (
-            target_btn.get_attribute("data-offerings") or
-            target_btn.get_attribute("data-offeringsseq") or
-            row.get_attribute("data-offerings") or
-            row.get_attribute("data-offeringsseq")
-        )
-        
-        if not offering_id:
-            chks = row.find_elements(By.CSS_SELECTOR, "input[type='checkbox'][value]")
-            for chk in chks:
-                val = chk.get_attribute("value")
-                if val and val.isdigit():
-                    offering_id = val
-                    break
+        for idx, row in enumerate(rows):
+            # '매물이 없습니다' 등 안내 행 건너뛰기
+            try:
+                row_text = row.text.strip()
+                if any(msg in row_text for msg in ["등록된 매물이 없습니다", "조회된 매물이 없습니다", "검색 결과가 없습니다"]):
+                    continue
+            except Exception:
+                pass
 
-        # 이미 이번 실행에서 처리한 매물이면 건너뜀
-        if offering_id and offering_id in processed_ids:
-            continue
+            # 해당 행에 [재광고] 버튼이 있는지 확인
+            try:
+                re_ad_btns = row.find_elements(
+                    By.CSS_SELECTOR,
+                    "a.btn-re-ad-pop, a.naverReAd, [aria-label='재광고'], #doubleRocketReAd, .re-ad-name"
+                )
+            except Exception:
+                continue
+
+            if not re_ad_btns:
+                continue
+                
+            target_btn = re_ad_btns[0]
             
-        print(f"      - [재광고 대상 선정] 목록 {idx + 1}번째 행 (매물 ID: {offering_id or '식별자 미확인'})")
-        return row, target_btn, offering_id
+            # 매물 식별자 추출 (중복 처리 방지용)
+            offering_id = None
+            try:
+                offering_id = (
+                    target_btn.get_attribute("data-offerings") or
+                    target_btn.get_attribute("data-offeringsseq") or
+                    row.get_attribute("data-offerings") or
+                    row.get_attribute("data-offeringsseq")
+                )
+                
+                if not offering_id:
+                    chks = row.find_elements(By.CSS_SELECTOR, "input[type='checkbox'][value]")
+                    for chk in chks:
+                        val = chk.get_attribute("value")
+                        if val and val.isdigit():
+                            offering_id = val
+                            break
+            except Exception:
+                pass
+
+            # 이미 이번 실행에서 처리한 매물이면 건너뜀
+            if offering_id and offering_id in processed_ids:
+                continue
+                
+            print(f"      - [재광고 대상 선정] 목록 {idx + 1}번째 행 (매물 ID: {offering_id or '식별자 미확인'})")
+            return row, target_btn, offering_id
+
+    except Exception as e:
+        print(f"      - 매물 탐색 중 오류 참고: {e}")
+        return None, None, None
         
     return None, None, None
 
@@ -759,7 +786,7 @@ def run_pipeline(keep_open=True, headless=False, max_count=MAX_RE_AD_COUNT, targ
             target_row, re_ad_btn, offering_id = find_next_re_ad_target(driver, processed_ids)
             
             if not target_row or not re_ad_btn:
-                print(f"[*] 더 이상 [재광고] 버튼이 있는 대상 매물이 없습니다. (완료 건수: {success_count}건)")
+                print(f"[*] 더 이상 재광고 대상 매물이 없습니다. (총 {success_count}개 처리 완료)")
                 break
                 
             if offering_id:
@@ -777,11 +804,14 @@ def run_pipeline(keep_open=True, headless=False, max_count=MAX_RE_AD_COUNT, targ
                 refresh_and_ensure_list(driver, wait, target_complex=selected_complex)
         
         print("\n" + "=" * 60)
-        print(f"★ [작업 완료] 지정된 매물 재광고 작업이 모두 성공적으로 완료되었습니다! (총 {success_count}건 완료)")
+        print(f"★ [작업 완료] 지정된 매물 재광고 작업이 성공적으로 마무리되었습니다! (총 {success_count}건 완료)")
         print(f"- 최종 대상 단지 : {selected_complex}")
         print(f"- 최종 완료 URL : {driver.current_url}")
         print(f"- 최종 페이지 제목 : {driver.title}")
-        print(f"안내: {max_count}개 매물 재광고 처리가 완료되어 브라우저를 깔끔하게 종료(driver.quit())합니다.")
+        if success_count >= max_count:
+            print(f"안내: 목표한 {max_count}개 매물 재광고 처리가 모두 완료되어 브라우저를 깔끔하게 종료(driver.quit())합니다.")
+        else:
+            print(f"안내: 재광고 가능한 모든 매물({success_count}개) 처리가 완료되어 브라우저를 깔끔하게 종료(driver.quit())합니다.")
         print("=" * 60)
         
         time.sleep(3)
